@@ -1,0 +1,13 @@
+aws_region          = "ap-northeast-3"
+tools_project_name  = "tools"
+
+gitlab_hostname     = "gitlab.example.com"
+gitlab_external_url = "https://gitlab.example.com"
+
+# 실제 Runner 토큰은 CI 변수로만 관리
+gitlab_runner_registration_token = ""
+
+gitlab_allowed_cidrs = ["203.0.113.0/24"]
+admin_ssh_cidrs      = ["203.0.113.0/24"]
+
+ssh_key_name = "CHANGE_ME"

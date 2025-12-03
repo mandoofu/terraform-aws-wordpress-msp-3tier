@@ -1,0 +1,13 @@
+# Terraform
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+terraform.tfvars
+
+# Test / temp
+test/
+
+# OS / Editor
+.DS_Store
+*.log

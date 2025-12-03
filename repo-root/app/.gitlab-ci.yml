@@ -1,0 +1,207 @@
+image: docker:27
+
+services:
+  - docker:27-dind
+
+variables:
+  DOCKER_DRIVER: overlay2
+  # Deployment configuration
+  HEALTH_CHECK_RETRIES: 10
+  HEALTH_CHECK_INTERVAL: 5
+
+stages:
+  - build
+  - deploy
+
+before_script:
+  - apk add --no-cache openssh-client bash curl jq aws-cli
+
+# Build stage
+build_and_push:
+  stage: build
+  script:
+    - echo "Building Docker image..."
+    - docker build -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" .
+    - docker tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" "$CI_REGISTRY_IMAGE:latest"
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+    - echo "Image pushed successfully"
+  only:
+    - main
+  tags:
+    - docker
+
+# Deploy stage with improved strategy
+deploy_to_asg:
+  stage: deploy
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache openssh-client bash curl jq aws-cli
+  script:
+    # Configure AWS CLI using IAM role or environment variables
+    - export AWS_DEFAULT_REGION=${AWS_REGION:-ap-northeast-3}
+    
+    # Get ASG details
+    - echo "Fetching Auto Scaling Group information..."
+    - ASG_NAME="${PROJECT_NAME}-asg"
+    - LAUNCH_TEMPLATE_NAME="${PROJECT_NAME}-lt"
+    
+    # Get current launch template
+    - |
+      CURRENT_LT_VERSION=$(aws ec2 describe-launch-templates \
+        --launch-template-names "$LAUNCH_TEMPLATE_NAME" \
+        --query 'LaunchTemplates[0].LatestVersionNumber' \
+        --output text)
+    
+    - echo "Current launch template version: $CURRENT_LT_VERSION"
+    
+    # Create new launch template version with updated image
+    - |
+      NEW_USER_DATA=$(cat <<'EOF' | base64 -w 0
+      #!/bin/bash
+      set -euxo pipefail
+      
+      # Login to container registry
+      docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+      
+      # Pull and run new container
+      docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+      docker stop app || true
+      docker rm app || true
+      docker run -d --name app -p 80:80 \
+        --restart unless-stopped \
+        "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+      
+      echo "Deployment completed"
+      EOF
+      )
+    
+    - echo "Creating new launch template version..."
+    - |
+      NEW_LT_VERSION=$(aws ec2 create-launch-template-version \
+        --launch-template-name "$LAUNCH_TEMPLATE_NAME" \
+        --source-version '$Latest' \
+        --launch-template-data "{\"UserData\":\"$NEW_USER_DATA\"}" \
+        --query 'LaunchTemplateVersion.VersionNumber' \
+        --output text)
+    
+    - echo "New launch template version created: $NEW_LT_VERSION"
+    
+    # Update ASG to use new launch template version
+    - echo "Updating Auto Scaling Group..."
+    - |
+      aws autoscaling update-auto-scaling-group \
+        --auto-scaling-group-name "$ASG_NAME" \
+        --launch-template "LaunchTemplateName=$LAUNCH_TEMPLATE_NAME,Version=$NEW_LT_VERSION"
+    
+    # Start instance refresh for rolling update
+    - echo "Starting instance refresh for rolling deployment..."
+    - |
+      REFRESH_ID=$(aws autoscaling start-instance-refresh \
+        --auto-scaling-group-name "$ASG_NAME" \
+        --preferences '{
+          "MinHealthyPercentage": 50,
+          "InstanceWarmup": 300,
+          "CheckpointPercentages": [50, 100],
+          "CheckpointDelay": 300
+        }' \
+        --query 'InstanceRefreshId' \
+        --output text)
+    
+    - echo "Instance refresh started: $REFRESH_ID"
+    
+    # Wait for instance refresh to complete
+    - echo "Waiting for instance refresh to complete..."
+    - |
+      while true; do
+        STATUS=$(aws autoscaling describe-instance-refreshes \
+          --auto-scaling-group-name "$ASG_NAME" \
+          --instance-refresh-ids "$REFRESH_ID" \
+          --query 'InstanceRefreshes[0].Status' \
+          --output text)
+        
+        echo "Instance refresh status: $STATUS"
+        
+        if [ "$STATUS" = "Successful" ]; then
+          echo "✅ Deployment completed successfully"
+          break
+        elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then
+          echo "❌ Deployment failed with status: $STATUS"
+          exit 1
+        fi
+        
+        sleep 30
+      done
+    
+    # Verify deployment health
+    - echo "Verifying deployment health..."
+    - |
+      HEALTHY_INSTANCES=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "$ASG_NAME" \
+        --query 'AutoScalingGroups[0].Instances[?HealthStatus==`Healthy`] | length(@)' \
+        --output text)
+    
+    - echo "Healthy instances: $HEALTHY_INSTANCES"
+    
+    - |
+      if [ "$HEALTHY_INSTANCES" -lt 1 ]; then
+        echo "❌ No healthy instances found after deployment"
+        exit 1
+      fi
+    
+    - echo "✅ Deployment verification completed"
+  
+  environment:
+    name: production
+    on_stop: stop_deployment
+  
+  only:
+    - main
+  
+  dependencies:
+    - build_and_push
+  
+  retry:
+    max: 1
+    when:
+      - script_failure
+
+# Rollback job (manual trigger)
+rollback_deployment:
+  stage: deploy
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache aws-cli
+  script:
+    - export AWS_DEFAULT_REGION=${AWS_REGION:-ap-northeast-3}
+    - ASG_NAME="${PROJECT_NAME}-asg"
+    - LAUNCH_TEMPLATE_NAME="${PROJECT_NAME}-lt"
+    
+    # Get previous version
+    - |
+      CURRENT_VERSION=$(aws ec2 describe-launch-templates \
+        --launch-template-names "$LAUNCH_TEMPLATE_NAME" \
+        --query 'LaunchTemplates[0].LatestVersionNumber' \
+        --output text)
+    
+    - PREVIOUS_VERSION=$((CURRENT_VERSION - 1))
+    - echo "Rolling back to version: $PREVIOUS_VERSION"
+    
+    # Update ASG to previous version
+    - |
+      aws autoscaling update-auto-scaling-group \
+        --auto-scaling-group-name "$ASG_NAME" \
+        --launch-template "LaunchTemplateName=$LAUNCH_TEMPLATE_NAME,Version=$PREVIOUS_VERSION"
+    
+    # Start instance refresh
+    - |
+      aws autoscaling start-instance-refresh \
+        --auto-scaling-group-name "$ASG_NAME" \
+        --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}'
+    
+    - echo "✅ Rollback initiated"
+  
+  when: manual
+  only:
+    - main

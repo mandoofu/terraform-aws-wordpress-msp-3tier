@@ -1,0 +1,38 @@
+# ==============================================
+# Service Environment Configuration
+# ==============================================
+
+db_password           = "CHANGE_ME"
+nat_eip_allocation_id = "eipalloc-xxxxxxxx"
+allowed_ssh_cidr      = "203.0.113.0/24"
+
+
+# ==============================================
+# RDS 설정 (운영 환경)
+# ==============================================
+rds_instance_class               = "db.t3.small"
+rds_allocated_storage            = 20
+rds_max_allocated_storage        = 100
+rds_multi_az                     = true   # 운영: true, 개발: false
+rds_backup_retention_period      = 7
+rds_deletion_protection          = true   # 운영: true, 개발: false
+rds_skip_final_snapshot          = false  # 운영: false, 개발: true
+rds_performance_insights_enabled = true
+
+# ==============================================
+# ALB 설정
+# ==============================================
+alb_deletion_protection = true
+enable_alb_access_logs  = true
+
+# HTTPS 설정 (ACM 인증서가 있는 경우에만)
+enable_https    = false
+certificate_arn = ""
+
+# ==============================================
+# Auto Scaling 설정
+# ==============================================
+instance_type    = "t3.small"
+desired_capacity = 2
+min_size         = 2
+max_size         = 6
