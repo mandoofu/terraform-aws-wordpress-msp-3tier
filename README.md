@@ -32,28 +32,6 @@ Terraform 기반의 멀티모듈 구조, GitLab 운영 환경, WordPress ASG 자
   - Terraform (AWS provider)
   - Remote backend (S3 + DynamoDB)
 
-아키텍처 다이어그램은 `/architecture` 디렉토리에 포함 예정입니다.
-
----
-
-## 📁 Repository Structure
-
-terraform-aws-wordpress-msp-3tier/
-├── terraform/
-│ ├── bootstrap_backend/
-│ ├── envs/
-│ │ ├── service/
-│ │ └── tools_and_peering/
-│ └── modules/
-├── architecture/
-└── README.md
-
-yaml
-코드 복사
-
-각 env는 서로 독립적인 workspace로 동작하며,  
-Service / Tools 는 서로 VPC Peering 으로 연결됩니다.
-
 ---
 
 ## 🚀 Deployment Order
