@@ -2,12 +2,13 @@ terraform {
   required_version = ">= 1.6.0"
 
   backend "s3" {
-    bucket         = "terraform-state-a22f0d4f"
+    bucket         = "terraform-state-<random-suffix>" # 예: terraform-state-xxxxxxxx
     key            = "service/terraform.tfstate"
     region         = "ap-northeast-3"
     dynamodb_table = "terraform-lock-table"
     encrypt        = true
   }
+
 
   required_providers {
     aws = {
